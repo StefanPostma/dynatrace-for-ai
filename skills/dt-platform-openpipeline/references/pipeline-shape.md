@@ -108,3 +108,40 @@ not re-apply. Complete the list or switch to `includeAll`.
 
 ⚠️ **`matcher: "true"` on a Data Extractor forwards every record in the pipeline**, with the volume
 and licensing consequences that implies. Scope it unless you really mean everything.
+
+## ⚠️ Never overwrite `timestamp` from the payload
+
+A record whose `timestamp` falls outside the ingest window (roughly 24h) is **silently dropped** —
+the ingest API returns **HTTP 204 with no warning** and the record simply never exists.
+
+So a processor that parses an event time out of the log line and assigns it to `timestamp`
+**destroys** any record carrying an older time, *after* ingest already accepted it. The failure is
+invisible from both ends: the sender sees success, and the record is not in Grail to be missed.
+
+**Verified on a live tenant.** Two identical auditd records, differing only in the epoch embedded in
+the line:
+
+| embedded time | `fieldsAdd timestamp = <parsed>` | parsed time in a namespaced field |
+|---|---|---|
+| now | landed | landed |
+| 13 months ago | **gone — HTTP 204, never queryable** | landed, event time preserved |
+
+**Write the parsed event time to a namespaced field** (`auditd.timestamp`, `o365.timestamp`) and
+leave the ingest-assigned `timestamp` authoritative:
+
+```
+| fieldsAdd auditd.timestamp = coalesce(auditd_ts, timestampFromUnixNanos(toLong(epoch * 1000000000)))
+```
+
+This matters most for **replay, backfill and catch-up reads**: a replay harness deliberately rebases
+timestamps into the ingest window, and a processor like this silently undoes that and deletes the
+data. If the source is always fresh and event-time semantics are wanted, assigning `timestamp` is
+defensible — but it is a trade, not a default.
+
+## Other limits the API enforces
+
+| field | limit |
+|---|---|
+| processor `id` | 4–100 characters |
+| processor `description` | **≤ 512 characters** (`Size must be lower than or equal to 512`) |
+
