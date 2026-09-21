@@ -65,13 +65,30 @@ bundle, so the stack survives a change in the bundle's output shape.
   `isNotNull()`, `iAny()`, `AND`/`OR`/`NOT`, numeric comparators.
 - **`in()` and `contains()` are NOT enabled in matchers.** Rewrite set membership as an `or` chain.
 - `==` is case-sensitive with no wildcards — use `matchesValue()` when casing can vary.
+- **A quoted literal never matches a numeric field.** `result.code == "0"` is accepted by the API,
+  deploys cleanly, and is **always false** when `result.code` is a `long` — no error anywhere, the
+  processor simply never fires. Comparison does not coerce across types. Drop the quotes for a
+  numeric field, or match a sibling string field if the source has one. This is the single most
+  expensive silent failure in this skill: every symptom points at the parse pattern, and the parse
+  pattern is fine.
+
+  ```
+  matcher: "result.code == \"0\""    # long field  -> never fires, silently
+  matcher: "result.code == 0"          # long field  -> correct
+  matcher: "audit.result == \"success\""  # string field -> correct
+  ```
+
+  Check a field's actual type before writing a matcher against it:
+  ```dql
+  fetch logs, from: now() - 1h | filter isNotNull(result.code) | fieldsAdd t = type(result.code) | fields t | limit 1
+  ```
 
 ## Quick reference
 
 | Task | Where |
 |---|---|
 | Find a bundle, read a `technologyId`, check `allowedConfigurations` | [`technology-bundles.md`](references/technology-bundles.md) |
-| Pipeline/routing JSON, Data Extractors, stage keys | [`pipeline-shape.md`](references/pipeline-shape.md) |
+| Pipeline/routing JSON, Data Extractors, stage keys, emitting OCSF | [`pipeline-shape.md`](references/pipeline-shape.md) |
 | DPL patterns that silently fail | [`dpl-traps.md`](references/dpl-traps.md) |
 | Safe deploy, rollback, stage-preserving update | [`deploy-runbook.md`](references/deploy-runbook.md) |
 

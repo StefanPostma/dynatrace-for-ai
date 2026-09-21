@@ -109,6 +109,38 @@ not re-apply. Complete the list or switch to `includeAll`.
 ⚠️ **`matcher: "true"` on a Data Extractor forwards every record in the pipeline**, with the volume
 and licensing consequences that implies. Scope it unless you really mean everything.
 
+## Producing OCSF, not just forwarding to `security.events`
+
+A Data Extractor forwards **Semantic Dictionary** fields. That is enough for Dynatrace's own
+`security.events` configuration, but a consumer that expects **OCSF** (Amazon Security Lake, the
+tenant's OCSF connection endpoint, any OCSF SIEM) needs a real OCSF document, and the `ocsf_001`
+bundle only *parses* OCSF findings — nothing in OpenPipeline *emits* OCSF for you.
+
+Four conventions, verified against the official mapping examples
+([github.com/ocsf/examples](https://github.com/ocsf/examples/tree/main/mappings), Windows 4625 →
+Authentication 3002). Each is a mistake that produces a document the schema accepts and a consumer
+misreads:
+
+1. **`severity_id` must not track the outcome.** The reference maps a *failed* logon to
+   `severity_id: 1` / `"Informational"`. Severity is the event's importance; whether it succeeded
+   belongs in `status_id` (`0` Unknown, `1` Success, `2` Failure, `99` Other). Deriving severity
+   from `event.outcome` promotes every routine auth failure to Medium and makes severity useless
+   for triage.
+2. **Every `*_id` enum carries a string sibling** — `activity_name`, `category_name`, `class_name`,
+   `type_name`, `severity`, `status`, `logon_type`. Consumers that render without the schema loaded
+   show bare integers otherwise.
+3. **`metadata.profiles` follows the data**, declaring which *optional* field groups the document
+   actually carries: `["host"]` when there is a `device`, `["cloud"]` for a cloud API event.
+   Hardcoding one advertises objects that are not in the document.
+4. **`time` is required** and is Unix **milliseconds**. A record the ingest path never stamped
+   serialises as `0`, which reads as 1970 downstream.
+
+`type_uid = class_uid * 100 + activity_id` — derive it, never hand-write it.
+
+Emit an endpoint object (`src_endpoint`, `dst_endpoint`) only when there is an address. A
+placeholder like `{"ip": "unknown"}` is worse than the field's absence: it is indistinguishable
+from a real observation.
+
 ## ⚠️ Never overwrite `timestamp` from the payload
 
 A record whose `timestamp` falls outside the ingest window (roughly 24h) is **silently dropped** —
