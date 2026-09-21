@@ -82,3 +82,55 @@ Sources with no bundle at time of writing, so custom DQL is justified: Windows E
 Linux auditd, Cisco ASA `%ASA-…` message bodies, Office 365 management activity. Note that
 `azure_entra_id_audit_logs_001` is **adjacent but not equivalent** to Office 365 management
 activity — same directory, different API and envelope.
+
+## ⚠️ A bundle only fires for the ingest routes its own matcher knows
+
+**Routing a record into a pipeline that contains the bundle is NOT enough.** The bundle carries its
+own matcher and that still has to pass. `customMatcher` **narrows** it — it cannot widen it.
+
+Verified on a live tenant, both returning *nothing* for logs-ingest-API records:
+
+| bundle | its matcher requires |
+|---|---|
+| `syslog_001` | `dt.openpipeline.source == "extension:syslog"` or `log.source == "/var/log/syslog"` |
+| `aws_cloud_trail_v3` | Firehose attributes, or S3 (`aws.resource.type` + `dt.da.aws.s3.key.name`) |
+
+So "reuse the bundle" holds only when the data arrives by the route the bundle was built for.
+
+### The fix: shim the matcher, don't reimplement the parser
+
+Add a `fieldsAdd` processor **before** the bundle that sets the attributes its matcher needs. You
+then maintain three lines instead of a second parser:
+
+```
+fieldsAdd cloud.provider          = coalesce(cloud.provider, "aws")
+| fieldsAdd aws.resource.type     = coalesce(aws.resource.type, "AWS::CloudTrail::Trail")
+| fieldsAdd dt.da.aws.s3.key.name = coalesce(dt.da.aws.s3.key.name, "non-native-route/cloudtrail.json")
+| fieldsAdd cloudtrail.route      = "shimmed"
+```
+
+Verified: with this ahead of `aws_cloud_trail_v3`, an ingest-API CloudTrail record is fully parsed
+into `audit.action`, `audit.identity`, `audit.result`, `actor.ips`, `aws.arn` and the rest.
+
+Rules:
+
+- **Coalesce-guard everything** so genuine delivery values are never overwritten.
+- **Set a marker field** so synthetic values remain auditable.
+- **Set them inside the pipeline, not at ingest.** At ingest these attributes change *routing* — a
+  record carrying real Firehose/S3 attributes is claimed by the built-in route before your pipeline
+  sees it.
+- **Disable the shim where the source arrives natively.**
+
+### Expect a different field family than your detections query
+
+A bundle normalizes to *its* model, which may not be the one your detections use.
+`aws_cloud_trail_v3` emits the **`audit.*`** model (`audit.action`, `audit.identity`, `audit.result`,
+`actor.ips`, `client.ip`), not `event.category` / `event.outcome` / `user_id` / `source.ip`. So the
+usual shape is three stages:
+
+```
+1. fieldsAdd   shim the bundle's matcher (non-native routes only)
+2. technology  the DT-maintained parser
+3. dql         map its output onto your field contract — mapping only, never re-parsing
+```
+

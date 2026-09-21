@@ -109,3 +109,13 @@ data json: """[{"content":"<a real sample line>"}]"""
 This catches pattern bugs in seconds. It does **not** catch functions disabled inside processors
 (`in()`, `contains()` and `matchesRegex()` all work here but are rejected there) — only a real
 create does.
+
+## ⚠️ Config changes take ~1–2 minutes to reach the ingest path
+
+After `apply`, records ingested immediately still flow through the **previous** pipeline version. A
+verification query run straight after deploy therefore returns a **false negative**: the fields look
+missing, and the obvious conclusion — "my processor is broken" — is wrong.
+
+Observed live: a corrected processor produced nothing on an ingest ~10s after apply, and worked on an
+identical ingest ~2 minutes later with no config change in between. Wait, re-ingest, then judge.
+
